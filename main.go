@@ -1,7 +1,8 @@
 package main
 
 import (
-	"sync"
+	"encoding/json"
+	"net/http"
 
 	"github.com/go-redis/redis"
 )
@@ -13,34 +14,53 @@ func main() {
 		DB:       0,
 	})
 
-	var list [1000000]int
-	var setGroup sync.WaitGroup
+	http.HandleFunc("/api/v1", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "GET":
+			keys := r.URL.Query()
+			key := keys.Get("key")
+			value, err := client.Get(key).Result()
 
-	setGroup.Add(len(list))
+			if err != nil {
+				http.Error(w, "Not Found", 404)
+			}
 
-	for _, i := range list {
-		go func(idx string, client *redis.Client) {
-			client.Set(idx, "wow", 0)
+			response := make(map[string]string)
+			response["key"] = key
+			response["value"] = value
 
-			setGroup.Done()
-		}(string(i), client)
-	}
+			outgoing, err := json.Marshal(response)
+			if err != nil {
+				http.Error(w, "failed to stringify JSON", 500)
+				return
+			}
 
-	setGroup.Wait()
+			w.Write(outgoing)
+		case "POST":
+			decoder := json.NewDecoder(r.Body)
 
-	client.BgSave()
+			var incoming struct {
+				Key     string
+				Value   string
+				Expires int64
+			}
 
-	var getGroup sync.WaitGroup
+			err := decoder.Decode(&incoming)
+			if err != nil {
+				http.Error(w, "failed to parse JSON", 500)
+				return
+			}
 
-	getGroup.Add(len(list))
+			clientErr := client.Set(incoming.Key, incoming.Value, 0).Err()
+			if clientErr != nil {
+				http.Error(w, "Failed to SET", 500)
+			}
 
-	for _, i := range list {
-		go func(idx string, client *redis.Client) {
-			client.Get(idx)
+			w.Write([]byte("{}"))
+		default:
+			http.Error(w, "", 405)
+		}
+	})
 
-			getGroup.Done()
-		}(string(i), client)
-	}
-
-	getGroup.Wait()
+	http.ListenAndServe(":8080", nil)
 }
